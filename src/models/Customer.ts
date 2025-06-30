@@ -1,47 +1,106 @@
-import mongoose, { Schema, Document, model } from 'mongoose';
+import mongoose, { Schema, Document } from 'mongoose';
 import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
-import dotenv from 'dotenv';
-
-dotenv.config();
-
-const JWT_SECRET = "my-secret"; // Ensure JWT_SECRET is a string
+import { config } from '../config';
 
 export interface ICustomer extends Document {
-    name: string;
-    email: string;
-    address: string;
-    phone: string;
-    password: string;
-    stripeCustomerId?: string; // Added Stripe customer ID
-    profilePictureUrl?: string;
-    generateAuthToken(): string;
+  name: string;
+  email: string;
+  address: string;
+  phone: string;
+  password: string;
+  stripeCustomerId?: string;
+  profilePictureUrl?: string;
+  createdAt: Date;
+  updatedAt: Date;
+  generateAuthToken(): string;
+  comparePassword(candidatePassword: string): Promise<boolean>;
 }
 
-const CustomerSchema: Schema = new Schema({
-    name: { type: String, required: true },
-    email: { type: String, required: true, unique: true },
-    address: { type: String, required: true },
-    phone: { type: String, required: true },
-    password: { type: String },
-    stripeCustomerId: { type: String, unique: true, sparse: true }, // Stripe customer ID
-    profilePictureUrl: { type: String }
-}, {
-    timestamps: true // Adds createdAt and updatedAt timestamps
-});
+const CustomerSchema = new Schema<ICustomer>(
+  {
+    name: { 
+      type: String, 
+      required: true,
+      trim: true,
+      minlength: 2,
+      maxlength: 100
+    },
+    email: { 
+      type: String, 
+      required: true, 
+      unique: true,
+      lowercase: true,
+      trim: true,
+      match: [/^\w+([.-]?\w+)*@\w+([.-]?\w+)*(\.\w{2,3})+$/, 'Please provide a valid email']
+    },
+    address: { 
+      type: String, 
+      required: true,
+      trim: true
+    },
+    phone: { 
+      type: String, 
+      required: true,
+      trim: true,
+      match: [/^[\d\s\-+()]+$/, 'Please provide a valid phone number']
+    },
+    password: { 
+      type: String,
+      required: true,
+      minlength: 6
+    },
+    stripeCustomerId: { 
+      type: String, 
+      unique: true, 
+      sparse: true 
+    },
+    profilePictureUrl: { 
+      type: String 
+    }
+  },
+  {
+    timestamps: true,
+    toJSON: {
+      transform(doc, ret) {
+        delete ret.password;
+        delete ret.__v;
+        return ret;
+      }
+    }
+  }
+);
 
+// Indexes for better query performance
 CustomerSchema.index({ email: 1 }, { unique: true });
-CustomerSchema.index({ name: 'text', email: 'text' });
 CustomerSchema.index({ stripeCustomerId: 1 });
+CustomerSchema.index({ createdAt: -1 });
 
+// Hash password before saving
 CustomerSchema.pre<ICustomer>('save', async function (next) {
-    if (!this.isModified('password')) return next();
-    this.password = await bcrypt.hash(this.password, 10);
+  if (!this.isModified('password')) return next();
+  
+  try {
+    const saltRounds = 10;
+    this.password = await bcrypt.hash(this.password, saltRounds);
     next();
+  } catch (error) {
+    next(error as Error);
+  }
 });
 
-CustomerSchema.methods.generateAuthToken = function () {
-    return jwt.sign({ id: this._id }, JWT_SECRET, { expiresIn: '7d' });
+// Instance method to generate auth token
+CustomerSchema.methods.generateAuthToken = function (): string {
+  return jwt.sign(
+    { id: this._id, email: this.email },
+    config.jwtSecret,
+    { expiresIn: config.jwtExpiry }
+  );
 };
 
-export default model<ICustomer>('Customer', CustomerSchema);
+// Instance method to compare passwords
+CustomerSchema.methods.comparePassword = async function (candidatePassword: string): Promise<boolean> {
+  return bcrypt.compare(candidatePassword, this.password);
+};
+
+export default mongoose.model<ICustomer>('Customer', CustomerSchema);
